@@ -1,220 +1,183 @@
-name: Build and publish IPA
+#import "GeodeInstaller.h"
+#import "LCUtils/LCAppInfo.h"
+#import "LCUtils/LCAppModel.h"
+#import "LCUtils/LCUtils.h"
+#import "LCUtils/Shared.h"
+#import "LCUtils/unarchive.h"
+#import "Utils.h"
+#import "VerifyInstall.h"
+#import "components/LogUtils.h"
+#import <UIKit/UIKit.h>
+#import <dlfcn.h>
+#import <objc/runtime.h>
 
-on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
+BOOL hasDoneUpdate = NO;
 
-permissions:
-  contents: read
+@implementation VerifyInstall
 
-jobs:
-  build:
-    name: Build IPA
-    runs-on: ubuntu-22.04
++ (BOOL)verifyGDAuthenticity {
+	// Authenticity verification is intentionally disabled.
+	return YES;
+}
 
-    steps:
-      - name: Checkout launcher
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
++ (BOOL)canLaunchAppWithBundleID:(NSString*)bundleID {
+	Class LSApplicationWorkspace_class = objc_getClass("LSApplicationWorkspace");
+	if (!LSApplicationWorkspace_class)
+		return NO;
+	id workspace = [LSApplicationWorkspace_class performSelector:@selector(defaultWorkspace)];
+	if (!workspace)
+		return NO;
+	SEL selector = NSSelectorFromString(@"openApplicationWithBundleID:");
+	NSInvocation* invocation = [NSInvocation invocationWithMethodSignature:[workspace methodSignatureForSelector:selector]];
+	[invocation setTarget:workspace];
+	[invocation setSelector:selector];
+	[invocation setArgument:&bundleID atIndex:2];
+	[invocation invoke];
+	[NSThread sleepForTimeInterval:1.0];
+	BOOL canLaunch;
+	[invocation getReturnValue:&canLaunch];
+	return canLaunch;
+}
 
-      - name: Install build dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
++ (void)startVerifyGDAuth:(RootViewController*)root {
+	UIAlertController* alert = [UIAlertController alertControllerWithTitle:@"launcher.verify-gd.title".loc message:@"launcher.verify-gd.msg".loc preferredStyle:UIAlertControllerStyleAlert];
+	UIAlertAction* launchAction = [UIAlertAction actionWithTitle:@"common.ok".loc style:UIAlertActionStyleDefault handler:^(UIAlertAction* action) {
+		BOOL canLaunch = [VerifyInstall canLaunchAppWithBundleID:@"com.robtop.geometryjump"];
+		if (!canLaunch) {
+			UIAlertController* resultAlert = [UIAlertController alertControllerWithTitle:@"Error" message:@"launcher.verify-gd.error".loc preferredStyle:UIAlertControllerStyleAlert];
+			[resultAlert addAction:[UIAlertAction actionWithTitle:@"common.ok".loc style:UIAlertActionStyleDefault handler:nil]];
+			[root presentViewController:resultAlert animated:YES completion:nil];
+			return;
+		}
+		NSUserDefaults* prefs = [Utils getPrefs];
+		[prefs setBool:YES forKey:@"UPDATE_AUTOMATICALLY"];
+		[prefs setBool:YES forKey:@"GDVerified"];
+		[prefs synchronize];
+		[root updateState];
+	}];
+	[alert addAction:launchAction];
+	[alert addAction:[UIAlertAction actionWithTitle:@"common.cancel".loc style:UIAlertActionStyleCancel handler:nil]];
+	[root presentViewController:alert animated:YES completion:nil];
+}
 
-          sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            curl \
-            git \
-            unzip \
-            rsync \
-            perl \
-            python3 \
-            xz-utils
++ (BOOL)verifyGDInstalled {
+	BOOL res = NO;
+	if (![Utils isSandboxed])
+		return YES;
+	NSURL* bundleURL = [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName] isDirectory:YES];
+	if ([[NSFileManager defaultManager] fileExistsAtPath:bundleURL.path isDirectory:&res]) {
+		if ([[Utils getPrefs] boolForKey:@"GDNeedsUpdate"])
+			return NO;
+		return res;
+	}
+	return NO;
+}
 
-      - name: Install Theos and iOS toolchain
-        shell: bash
-        run: |
-          set -euo pipefail
++ (void)startGDInstall:(RootViewController*)root url:(NSURL*)url {
+	@autoreleasepool {
+		[[Utils getPrefs] setBool:NO forKey:@"GDNeedsUpdate"];
+		NSFileManager* fm = [NSFileManager defaultManager];
+		[fm removeItemAtURL:[[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]] error:nil];
+		[fm createDirectoryAtURL:[LCPath bundlePath] withIntermediateDirectories:YES attributes:nil error:nil];
+		NSURL* payloadPath = [[fm temporaryDirectory] URLByAppendingPathComponent:@"Payload"];
+		NSError* error = nil;
+		if ([fm fileExistsAtPath:payloadPath.path]) {
+			[fm removeItemAtURL:payloadPath error:&error];
+			if (error) {
+				[root updateState];
+				return AppLog(@"Error removing item from payload: %@", error);
+			}
+		}
 
-          export THEOS="$RUNNER_TEMP/theos"
-          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+		dispatch_async(dispatch_get_main_queue(), ^{
+			[root barProgress:0];
+			[NSTimer scheduledTimerWithTimeInterval:0.1 repeats:YES block:^(NSTimer* timer) {
+				dispatch_async(dispatch_get_main_queue(), ^{
+					if (getProgress() < 100) {
+						[root barProgress:(CGFloat)getProgress()];
+					} else {
+						[root progressVisibility:YES];
+						[timer invalidate];
+					}
+				});
+			}];
+		});
 
-          rm -rf "$THEOS"
+		[Utils decompress:url.path extractionPath:fm.temporaryDirectory.path completion:^(int decompError) {
+			if (decompError != 0) {
+				return dispatch_async(dispatch_get_main_queue(), ^{
+					[root updateState];
+					[Utils showError:root title:[NSString stringWithFormat:@"Decompressing IPA failed.\nStatus Code: %d", decompError] error:nil];
+				});
+			}
+			NSError* installError = nil;
+			NSArray<NSString*>* contents = [fm contentsOfDirectoryAtPath:payloadPath.path error:&installError];
+			if (installError || contents.count == 0) {
+				return dispatch_async(dispatch_get_main_queue(), ^{ [root updateState]; });
+			}
+			NSString* appName = nil;
+			for (NSString* name in contents) {
+				if ([name hasSuffix:@".app"]) {
+					appName = name;
+					break;
+				}
+			}
+			if (!appName) {
+				return dispatch_async(dispatch_get_main_queue(), ^{ [root updateState]; });
+			}
+			NSURL* source = [payloadPath URLByAppendingPathComponent:appName];
+			LCAppInfo* info = [[LCAppInfo alloc] initWithBundlePath:source.path];
+			NSString* relativePath = [NSString stringWithFormat:@"%@.app", info.bundleIdentifier];
+			NSURL* destination = [LCPath.bundlePath URLByAppendingPathComponent:relativePath];
+			if ([fm fileExistsAtPath:destination.path]) {
+				[fm removeItemAtURL:destination error:nil];
+			}
+			if (![fm moveItemAtURL:source toURL:destination error:&installError] || installError) {
+				return dispatch_async(dispatch_get_main_queue(), ^{ [root updateState]; });
+			}
+			LCAppInfo* finalApp = [[LCAppInfo alloc] initWithBundlePath:destination.path];
+			if (!finalApp) {
+				return dispatch_async(dispatch_get_main_queue(), ^{ [root updateState]; });
+			}
+			finalApp.relativeBundlePath = relativePath;
+			[finalApp patchExecAndSignIfNeedWithCompletionHandler:^(BOOL success, NSString* errorInfo) {
+				dispatch_async(dispatch_get_main_queue(), ^{
+					if (![VerifyInstall verifyGeodeInstalled]) {
+						root.optionalTextLabel.text = @"launcher.status.download-geode".loc;
+						[[[GeodeInstaller alloc] init] startInstall:root ignoreRoot:NO];
+					} else {
+						[root progressVisibility:YES];
+						[root updateState];
+					}
+				});
+				if (!success) {
+					AppLog(@"error with signing: %@", errorInfo);
+				}
+			} progressHandler:^(NSProgress* signProgress) {
+			} forceSign:NO blockMainThread:YES];
+		}];
+	}
+}
 
-          git clone \
-            --depth=1 \
-            --recursive \
-            https://github.com/theos/theos.git \
-            "$THEOS"
++ (BOOL)verifyGeodeInstalled {
+	if (![Utils isSandboxed]) {
+		NSString* applicationSupportDirectory = [[Utils getGDDocPath] stringByAppendingString:@"Library/Application Support"];
+		if (applicationSupportDirectory != nil) {
+			NSString* geodePath = [applicationSupportDirectory stringByAppendingString:@"/GeometryDash/game/geode/Geode.ios.dylib"];
+			return [[NSFileManager defaultManager] fileExistsAtPath:geodePath];
+		}
+		return NO;
+	}
+	NSString* geodePath = [[LCPath tweakPath] URLByAppendingPathComponent:@"Geode.ios.dylib"].path;
+	return [[NSFileManager defaultManager] fileExistsAtPath:geodePath];
+}
 
-          ARCH="$(uname -m)"
++ (BOOL)verifyAll {
+	if (!hasDoneUpdate && [[Utils getPrefs] boolForKey:@"UPDATE_AUTOMATICALLY"]) {
+		hasDoneUpdate = YES;
+		return NO;
+	}
+	return [VerifyInstall verifyGDInstalled] && [VerifyInstall verifyGeodeInstalled];
+}
 
-          curl \
-            --fail \
-            --location \
-            --retry 3 \
-            --retry-delay 2 \
-            "https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-${ARCH}.tar.xz" \
-            --output "$RUNNER_TEMP/iOSToolchain.tar.xz"
-
-          tar \
-            --extract \
-            --file "$RUNNER_TEMP/iOSToolchain.tar.xz" \
-            --directory "$THEOS/toolchain"
-
-          test -x "$THEOS/toolchain/linux/iphone/bin/clang"
-
-          "$THEOS/bin/install-sdk" iPhoneOS16.5
-
-      - name: Set build metadata
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          sed -i \
-            "s|__COMMIT_HASH__|$(git rev-parse --short "$GITHUB_SHA")|" \
-            src/main.m
-
-      - name: Build IPA
-        id: build-step
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          export THEOS="${THEOS:-$RUNNER_TEMP/theos}"
-
-          test -d "$THEOS"
-          test -x "$THEOS/toolchain/linux/iphone/bin/clang"
-
-          make package FINALPACKAGE=1 STRIP=0
-
-          IPA_PATH="$(find packages -type f -name '*.ipa' -print -quit)"
-
-          if [ -z "$IPA_PATH" ]; then
-            echo "No IPA was produced."
-            find packages -maxdepth 2 -type f -print || true
-            exit 1
-          fi
-
-          IPA_NAME="$(basename "$IPA_PATH")"
-
-          echo "ipa-path=$IPA_PATH" >> "$GITHUB_OUTPUT"
-          echo "ipa-name=$IPA_NAME" >> "$GITHUB_OUTPUT"
-
-          echo "Built IPA: $IPA_NAME"
-
-      - name: Upload IPA as workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: GeodeLauncher-ipa
-          path: ${{ steps.build-step.outputs.ipa-path }}
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Publish IPA to GitHub Pages repository
-        env:
-          PAGES_TOKEN: ${{ secrets.PAGES_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ -z "$PAGES_TOKEN" ]; then
-            echo "The PAGES_TOKEN Actions secret is missing."
-            exit 1
-          fi
-
-          IPA_PATH="${{ steps.build-step.outputs.ipa-path }}"
-          IPA_NAME="${{ steps.build-step.outputs.ipa-name }}"
-          COMMIT_SHORT="$(git rev-parse --short "$GITHUB_SHA")"
-          PAGES_DIR="$RUNNER_TEMP/github-pages"
-
-          git clone \
-            --depth=1 \
-            --branch main \
-            "https://x-access-token:${PAGES_TOKEN}@github.com/chantinlongxthrx/chantinlongxthrx.github.io.git" \
-            "$PAGES_DIR"
-
-          mkdir -p "$PAGES_DIR/downloads"
-
-          find "$PAGES_DIR/downloads" \
-            -maxdepth 1 \
-            -type f \
-            -name '*.ipa' \
-            -delete
-
-          cp "$IPA_PATH" "$PAGES_DIR/downloads/$IPA_NAME"
-
-          cat > "$PAGES_DIR/index.html" <<EOF
-          <!doctype html>
-          <html lang="en">
-          <head>
-            <meta charset="utf-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1">
-            <title>iOS Launcher</title>
-            <style>
-              body {
-                max-width: 680px;
-                margin: 60px auto;
-                padding: 0 20px;
-                font-family: system-ui, sans-serif;
-                line-height: 1.6;
-                background: #f5f5f7;
-                color: #222;
-              }
-
-              main {
-                padding: 32px;
-                border-radius: 16px;
-                background: white;
-                box-shadow: 0 4px 20px #0001;
-              }
-
-              a {
-                display: inline-block;
-                padding: 12px 18px;
-                border-radius: 10px;
-                background: #007aff;
-                color: white;
-                text-decoration: none;
-                font-weight: 600;
-              }
-
-              code {
-                word-break: break-all;
-              }
-            </style>
-          </head>
-          <body>
-            <main>
-              <h1>iOS Launcher</h1>
-              <p>Latest build: <code>$IPA_NAME</code></p>
-              <p>Source commit: <code>$COMMIT_SHORT</code></p>
-              <p>
-                <a href="./downloads/$IPA_NAME">Download IPA</a>
-              </p>
-            </main>
-          </body>
-          </html>
-          EOF
-
-          cd "$PAGES_DIR"
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add index.html downloads/
-
-          if git diff --cached --quiet; then
-            echo "No website changes to publish."
-            exit 0
-          fi
-
-          git commit -m "Publish IPA $IPA_NAME"
-          git push origin main
-
-          echo "Published to https://chantinlongxthrx.github.io/"
+@end
