@@ -21,19 +21,23 @@ jobs:
           submodules: recursive
 
       - name: Install build dependencies
+        shell: bash
         run: |
+          set -euo pipefail
+
           sudo apt-get update
+
           sudo apt-get install -y \
             build-essential \
             curl \
             git \
             unzip \
             rsync \
-            ldid \
             perl \
-            python3
+            python3 \
+            xz-utils
 
-      - name: Install Theos
+      - name: Install Theos and iOS toolchain
         shell: bash
         run: |
           set -euo pipefail
@@ -41,38 +45,53 @@ jobs:
           THEOS="$RUNNER_TEMP/theos"
           echo "THEOS=$THEOS" >> "$GITHUB_ENV"
 
-          git clone --depth=1 --recursive \
+          git clone \
+            --depth=1 \
+            --recursive \
             https://github.com/theos/theos.git \
             "$THEOS"
 
           ARCH="$(uname -m)"
 
-          curl --fail --location --retry 3 \
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
             "https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-${ARCH}.tar.xz" \
             --output "$RUNNER_TEMP/iOSToolchain.tar.xz"
 
-          tar -xJf "$RUNNER_TEMP/iOSToolchain.tar.xz" \
-            -C "$THEOS/toolchain"
-
-          "$THEOS/bin/install-sdk" iPhoneOS16.5
+          tar \
+            --extract \
+            --file "$RUNNER_TEMP/iOSToolchain.tar.xz" \
+            --directory "$THEOS/toolchain"
 
           test -x "$THEOS/toolchain/linux/iphone/bin/clang"
 
-      - name: Verify direct IPA URL configuration
+          "$THEOS/bin/install-sdk" iPhoneOS16.5
+
+      - name: Check IPA download configuration
         shell: bash
         run: |
           set -euo pipefail
 
           if grep -q 'YOUR-DOMAIN.example' src/RootViewController.m; then
-            echo "Replace LOCAL_URL in src/RootViewController.m with your direct IPA URL."
+            echo "ERROR: Replace LOCAL_URL in src/RootViewController.m with a direct IPA URL."
             exit 1
           fi
 
-          grep -q '#define LOCAL_BUILD 1' src/RootViewController.m
+          if ! grep -q '#define LOCAL_BUILD 1' src/RootViewController.m; then
+            echo "ERROR: LOCAL_BUILD must be set to 1."
+            exit 1
+          fi
 
       - name: Set build metadata
+        shell: bash
         run: |
-          sed -i "s|__COMMIT_HASH__|$(git rev-parse --short "$GITHUB_SHA")|" src/main.m
+          set -euo pipefail
+
+          sed -i \
+            "s|__COMMIT_HASH__|$(git rev-parse --short "$GITHUB_SHA")|" \
+            src/main.m
 
       - name: Build IPA
         shell: bash
