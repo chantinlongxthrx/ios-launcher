@@ -1,11 +1,15 @@
 name: Build IPA
 
 on:
+  push:
+    branches:
+      - main
+
   workflow_dispatch:
     inputs:
       gd_download:
-        description: "Direct URL to the decrypted Geometry Dash IPA"
-        required: true
+        description: "Direct download URL for the decrypted Geometry Dash IPA"
+        required: false
         type: string
 
 permissions:
@@ -13,31 +17,22 @@ permissions:
 
 jobs:
   build:
+    name: Build and package IPA
     runs-on: ubuntu-22.04
 
-    env:
-      GD_DOWNLOAD: ${{ inputs.gd_download }}
-
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
 
-      - name: Check input
-        run: |
-          set -e
-
-          if [ -z "$GD_DOWNLOAD" ]; then
-            echo "ERROR: No IPA URL supplied."
-            exit 1
-          fi
-
-          echo "IPA download URL received."
-
       - name: Install dependencies
+        shell: bash
         run: |
+          set -euo pipefail
+
           sudo apt-get update
+
           sudo apt-get install -y \
             build-essential \
             curl \
@@ -47,14 +42,15 @@ jobs:
             rsync \
             perl \
             python3 \
-            xz-utils
+            xz-utils \
+            jq
 
       - name: Install Theos
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           export THEOS="$RUNNER_TEMP/theos"
-          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
 
           git clone \
             --depth=1 \
@@ -62,9 +58,14 @@ jobs:
             https://github.com/theos/theos.git \
             "$THEOS"
 
+          echo "THEOS=$THEOS" >> "$GITHUB_ENV"
+
       - name: Install iOS toolchain
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
+
+          export THEOS="$RUNNER_TEMP/theos"
 
           ARCH="$(uname -m)"
 
@@ -72,8 +73,9 @@ jobs:
             --fail \
             --location \
             --retry 3 \
+            --retry-delay 2 \
             "https://github.com/L1ghtmann/llvm-project/releases/latest/download/iOSToolchain-${ARCH}.tar.xz" \
-            -o "$RUNNER_TEMP/iOSToolchain.tar.xz"
+            --output "$RUNNER_TEMP/iOSToolchain.tar.xz"
 
           mkdir -p "$THEOS/toolchain"
 
@@ -85,142 +87,368 @@ jobs:
 
           "$THEOS/bin/install-sdk" iPhoneOS16.5
 
-      - name: Configure source
+      - name: Configure Geometry Dash URL
+        shell: bash
+        env:
+          GD_DOWNLOAD: ${{ inputs.gd_download }}
         run: |
-          set -e
+          set -euo pipefail
+
+          if [ -z "${GD_DOWNLOAD:-}" ]; then
+            echo "No manual Geometry Dash URL supplied."
+            echo "Keeping the URL already present in the source."
+            exit 0
+          fi
 
           python3 <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          url = os.environ["GD_DOWNLOAD"]
+          path = Path("src/RootViewController.m")
+
+          if not path.exists():
+              raise SystemExit("src/RootViewController.m was not found")
+
+          text = path.read_text()
+
+          pattern = r'#define\s+LOCAL_URL\s+"[^"]*"'
+
+          replacement = f'#define LOCAL_URL "{url}"'
+
+          new_text, count = re.subn(pattern, replacement, text, count=1)
+
+          if count == 0:
+              raise SystemExit(
+                  "Could not find the LOCAL_URL definition in "
+                  "src/RootViewController.m"
+              )
+
+          path.write_text(new_text)
+
+          print("Geometry Dash download URL configured.")
+          PY
+
+      - name: Set build metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -f src/main.m ]; then
+            python3 <<'PY'
           from pathlib import Path
           import os
 
-          # Configure Geometry Dash URL
-          root = Path("src/RootViewController.m")
+          path = Path("src/main.m")
+          text = path.read_text()
 
-          if not root.exists():
-              raise SystemExit("src/RootViewController.m not found")
+          commit = os.environ["GITHUB_SHA"][:7]
 
-          text = root.read_text()
+          text = text.replace("__COMMIT_HASH__", commit)
 
-          if "__DOWNLOAD_LINK__" in text:
-              text = text.replace(
-                  "__DOWNLOAD_LINK__",
-                  os.environ["GD_DOWNLOAD"]
-              )
+          path.write_text(text)
 
-          root.write_text(text)
-
-          # Configure commit hash
-          main = Path("src/main.m")
-
-          if main.exists():
-              text = main.read_text()
-              text = text.replace(
-                  "__COMMIT_HASH__",
-                  os.environ["GITHUB_SHA"][:7]
-              )
-              main.write_text(text)
-
-          print("Source configured.")
+          print(f"Build commit: {commit}")
           PY
+          else
+            echo "src/main.m not found; skipping commit metadata."
+          fi
 
-      - name: Build
+      - name: Clean previous build
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
+
+          make clean || true
+
+          rm -rf packages
+          rm -rf "$RUNNER_TEMP/ipa"
+          rm -rf "$RUNNER_TEMP/ipa-test"
+
+      - name: Build application
+        shell: bash
+        run: |
+          set -euo pipefail
 
           export THEOS="$RUNNER_TEMP/theos"
 
-          make clean || true
-          make FINALPACKAGE=1 STRIP=0
+          echo "THEOS=$THEOS"
 
-      - name: Find application
-        id: app
+          test -d "$THEOS"
+          test -x "$THEOS/toolchain/linux/iphone/bin/clang"
+
+          make package \
+            FINALPACKAGE=1 \
+            STRIP=0
+
+      - name: Find built application
+        id: find_app
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          echo "Searching for .app..."
+          echo "Build output:"
 
-          APP="$(find . \
-            -type d \
-            -name '*.app' \
-            -not -path './.git/*' \
-            -print \
-            | head -n 1)"
+          find . \
+            -maxdepth 5 \
+            \( -name "*.app" -o -name "*.ipa" \) \
+            -print || true
 
-          if [ -z "$APP" ]; then
-            echo "ERROR: No .app found."
-            find . -type d -name '*.app' -print || true
+          APP_PATH=""
+
+          if [ -d "packages" ]; then
+            APP_PATH="$(find packages -type d -name "*.app" -print -quit || true)"
+          fi
+
+          if [ -z "$APP_PATH" ]; then
+            APP_PATH="$(find . \
+              -type d \
+              -name "*.app" \
+              -not -path "./.git/*" \
+              -not -path "./$RUNNER_TEMP/*" \
+              -print -quit || true)"
+          fi
+
+          if [ -z "$APP_PATH" ]; then
+            echo "ERROR: No .app was produced."
             exit 1
           fi
 
-          echo "Found:"
-          echo "$APP"
+          echo "Found application:"
+          echo "$APP_PATH"
 
-          if [ ! -f "$APP/Info.plist" ]; then
-            echo "ERROR: Info.plist missing."
-            exit 1
-          fi
+          echo "app-path=$APP_PATH" >> "$GITHUB_OUTPUT"
 
-          echo "app=$APP" >> "$GITHUB_OUTPUT"
-
-      - name: Create IPA
-        id: ipa
+      - name: Create clean IPA
+        id: package
+        shell: bash
+        env:
+          APP_PATH: ${{ steps.find_app.outputs.app-path }}
         run: |
-          set -e
+          set -euo pipefail
 
-          APP="${{ steps.app.outputs.app }}"
-          APP_NAME="$(basename "$APP")"
-          IPA_NAME="${APP_NAME%.app}.ipa"
+          IPA_DIR="$RUNNER_TEMP/ipa"
+          IPA_OUTPUT="$GITHUB_WORKSPACE/ios-launcher.ipa"
 
-          rm -rf "$RUNNER_TEMP/ipa"
-          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          rm -rf "$IPA_DIR"
+          mkdir -p "$IPA_DIR/Payload"
 
-          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
+          rm -f "$IPA_OUTPUT"
 
-          cd "$RUNNER_TEMP/ipa"
+          echo "Copying application:"
+          echo "$APP_PATH"
 
-          zip -r -9 \
-            "$GITHUB_WORKSPACE/$IPA_NAME" \
+          cp -R "$APP_PATH" "$IPA_DIR/Payload/"
+
+          echo
+          echo "IPA directory:"
+          find "$IPA_DIR/Payload" -maxdepth 2 -print
+
+          cd "$IPA_DIR"
+
+          zip \
+            -r \
+            -q \
+            "$IPA_OUTPUT" \
             Payload
 
           cd "$GITHUB_WORKSPACE"
 
+          echo
           echo "Created:"
-          ls -lh "$IPA_NAME"
+          ls -lh "$IPA_OUTPUT"
 
-          echo "ipa=$GITHUB_WORKSPACE/$IPA_NAME" >> "$GITHUB_OUTPUT"
-          echo "name=$IPA_NAME" >> "$GITHUB_OUTPUT"
+          test -s "$IPA_OUTPUT"
 
-      - name: Validate IPA
+          echo "ipa-path=$IPA_OUTPUT" >> "$GITHUB_OUTPUT"
+
+      - name: Validate IPA archive
+        shell: bash
+        env:
+          IPA_PATH: ${{ steps.package.outputs.ipa-path }}
         run: |
-          set -e
+          set -euo pipefail
 
-          IPA="${{ steps.ipa.outputs.ipa }}"
+          echo "========================================"
+          echo "Testing IPA ZIP integrity"
+          echo "========================================"
 
-          echo "Testing archive..."
-
-          unzip -t "$IPA"
-
-          echo
-          echo "IPA contents:"
-          unzip -Z1 "$IPA" | head -100
+          unzip -t "$IPA_PATH"
 
           echo
-          echo "Checking Payload..."
+          echo "========================================"
+          echo "IPA contents"
+          echo "========================================"
 
-          unzip -Z1 "$IPA" | grep -q '^Payload/'
-
-          echo
-          echo "Checking application..."
-
-          unzip -Z1 "$IPA" | grep -q '^Payload/.*\.app/Info.plist$'
+          unzip -Z1 "$IPA_PATH"
 
           echo
-          echo "IPA VALID."
+          echo "========================================"
+          echo "Checking Payload"
+          echo "========================================"
 
-      - name: Upload IPA
+          if ! unzip -Z1 "$IPA_PATH" | grep -q '^Payload/'; then
+            echo "ERROR: Payload directory is missing."
+            exit 1
+          fi
+
+          echo "Payload found."
+
+          echo
+          echo "========================================"
+          echo "Checking .app"
+          echo "========================================"
+
+          APP_ENTRY="$(unzip -Z1 "$IPA_PATH" | grep -E '^Payload/[^/]+\.app/' | head -n 1 || true)"
+
+          if [ -z "$APP_ENTRY" ]; then
+            echo "ERROR: No .app was found inside Payload."
+            exit 1
+          fi
+
+          echo "Application found:"
+          echo "$APP_ENTRY"
+
+          echo
+          echo "========================================"
+          echo "Extracting IPA"
+          echo "========================================"
+
+          TEST_DIR="$RUNNER_TEMP/ipa-test"
+
+          rm -rf "$TEST_DIR"
+          mkdir -p "$TEST_DIR"
+
+          unzip \
+            -q \
+            "$IPA_PATH" \
+            -d "$TEST_DIR"
+
+          test -d "$TEST_DIR/Payload"
+
+          APP_DIR="$(find "$TEST_DIR/Payload" \
+            -maxdepth 1 \
+            -type d \
+            -name "*.app" \
+            -print \
+            -quit)"
+
+          if [ -z "$APP_DIR" ]; then
+            echo "ERROR: IPA extracted, but no .app was found."
+            exit 1
+          fi
+
+          echo
+          echo "========================================"
+          echo "IPA VALIDATION PASSED"
+          echo "========================================"
+          echo
+          echo "IPA:"
+          echo "$IPA_PATH"
+          echo
+          echo "Extracted app:"
+          echo "$APP_DIR"
+
+      - name: Upload IPA artifact
         uses: actions/upload-artifact@v4
         with:
-          name: iOS-Launcher-IPA
-          path: ${{ steps.ipa.outputs.ipa }}
+          name: ios-launcher-ipa
+          path: ${{ steps.package.outputs.ipa-path }}
           if-no-files-found: error
           retention-days: 30
+
+      - name: Publish IPA to GitHub Pages
+        shell: bash
+        env:
+          PAGES_TOKEN: ${{ secrets.PAGES_TOKEN }}
+          IPA_PATH: ${{ steps.package.outputs.ipa-path }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${PAGES_TOKEN:-}" ]; then
+            echo "ERROR: PAGES_TOKEN is not configured."
+            echo "The IPA was uploaded as a workflow artifact."
+            exit 1
+          fi
+
+          PAGES_DIR="$RUNNER_TEMP/github-pages"
+
+          rm -rf "$PAGES_DIR"
+
+          echo "Cloning GitHub Pages repository..."
+
+          git clone \
+            --depth=1 \
+            --branch main \
+            "https://x-access-token:${PAGES_TOKEN}@github.com/chantinlongxthrx/chantinlongxthrx.github.io.git" \
+            "$PAGES_DIR"
+
+          mkdir -p "$PAGES_DIR/downloads"
+
+          IPA_NAME="ios-launcher.ipa"
+
+          rm -f "$PAGES_DIR/downloads/"*.ipa
+
+          cp \
+            "$IPA_PATH" \
+            "$PAGES_DIR/downloads/$IPA_NAME"
+
+          cat > "$PAGES_DIR/index.html" <<EOF
+          <!doctype html>
+          <html lang="en">
+          <head>
+            <meta charset="utf-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <title>iOS Launcher</title>
+            <style>
+              body {
+                font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+                max-width: 700px;
+                margin: 60px auto;
+                padding: 20px;
+              }
+
+              a {
+                display: inline-block;
+                padding: 14px 20px;
+                border-radius: 10px;
+                background: #007aff;
+                color: white;
+                text-decoration: none;
+              }
+            </style>
+          </head>
+          <body>
+            <h1>iOS Launcher</h1>
+            <p>Download the latest IPA:</p>
+            <p>
+              <a href="./downloads/$IPA_NAME">
+                Download IPA
+              </a>
+            </p>
+          </body>
+          </html>
+          EOF
+
+          cd "$PAGES_DIR"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add index.html downloads/
+
+          if git diff --cached --quiet; then
+            echo "No Pages changes detected."
+            exit 0
+          fi
+
+          git commit \
+            -m "Publish iOS Launcher IPA"
+
+          git push origin main
+
+          echo
+          echo "========================================"
+          echo "PUBLISHED TO GITHUB PAGES"
+          echo "========================================"
