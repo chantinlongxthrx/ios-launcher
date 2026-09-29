@@ -178,7 +178,13 @@ extern NSString* g_commitHash;
 			[self.launchButton setImage:[[UIImage systemImageNamed:@"tray.and.arrow.down"] imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate]
 							   forState:UIControlStateNormal];
 			[self.launchButton addTarget:self action:@selector(updateGeode) forControlEvents:UIControlEventTouchUpInside];
-			[[GeodeInstaller alloc] checkUpdates:self download:YES];
+			// Geode is optional — do not automatically download or verify it here.
+// If Geode is already installed, the normal Geode patch/launch code will use it.
+if ([VerifyInstall verifyGeodeInstalled]) {
+	AppLog(@"Geode detected — keeping existing Geode installation.");
+} else {
+	AppLog(@"Geode not installed — continuing without automatic Geode download.");
+}
 		}
 	}
 }
@@ -504,7 +510,13 @@ extern NSString* g_commitHash;
 }
 
 - (void)updateGeode {
-	[[GeodeInstaller alloc] checkUpdates:self download:YES];
+	// Geode is optional — do not automatically download or verify it here.
+// If Geode is already installed, the normal Geode patch/launch code will use it.
+if ([VerifyInstall verifyGeodeInstalled]) {
+	AppLog(@"Geode detected — keeping existing Geode installation.");
+} else {
+	AppLog(@"Geode not installed — continuing without automatic Geode download.");
+}
 }
 - (void)downloadGame {
 	if (![Utils isSandboxed]) { // since jit doesnt work anyways... why would we install it twice??
