@@ -7,11 +7,6 @@ on:
 
   workflow_dispatch:
     inputs:
-      gd_download:
-        description: "Direct download URL for the decrypted Geometry Dash IPA"
-        required: false
-        type: string
-
 permissions:
   contents: read
 
@@ -133,7 +128,7 @@ jobs:
       - name: Download bundled Geometry Dash
         shell: bash
         env:
-          GD_DOWNLOAD: ${{ inputs.gd_download }}
+          GD_DOWNLOAD: ${{ secrets.GD_INSTALL_LINK }}
         run: |
           set -euo pipefail
 
