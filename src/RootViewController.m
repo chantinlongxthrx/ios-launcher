@@ -113,7 +113,21 @@ extern NSString* g_commitHash;
 }
 
 - (void)updateState {
-	[self updatePatchStatus];
+    // Install bundled GD once if it is not installed.
+    if ([Utils isSandboxed] &&
+        ![VerifyInstall verifyGDInstalled] &&
+        [VerifyInstall hasBundledGD] &&
+        ![[Utils getPrefs] boolForKey:@"BundledGDAutoInstallAttempted"]) {
+
+        [[Utils getPrefs] setBool:YES
+                           forKey:@"BundledGDAutoInstallAttempted"];
+
+        AppLog(@"Installing bundled Geometry Dash IPA...");
+        [VerifyInstall installBundledGD:self];
+        return;
+    }
+
+    [self updatePatchStatus];
 	self.logoImageView.frame = CGRectMake(self.view.center.x - 75, self.view.center.y - 130, 150, 150);
 	self.titleLabel.frame = CGRectMake(0, CGRectGetMaxY(self.logoImageView.frame) + 15, self.view.bounds.size.width, 35);
 	self.optionalTextLabel.frame = CGRectMake(0, CGRectGetMaxY(self.titleLabel.frame) + 10, self.view.bounds.size.width, 40);
