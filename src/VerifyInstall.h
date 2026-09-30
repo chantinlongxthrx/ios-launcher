@@ -7,6 +7,8 @@
 + (void)startVerifyGDAuth:(RootViewController*)root;
 + (BOOL)canLaunchAppWithBundleID:(NSString*)bundleID;
 + (BOOL)verifyGDInstalled;
++ (BOOL)hasBundledGD;
++ (void)installBundledGD:(RootViewController*)root;
 + (void)startGDInstall:(RootViewController*)root url:(NSURL*)url;
 + (BOOL)verifyGeodeInstalled;
 //+ (void)startGeodeInstall;
