@@ -135,6 +135,37 @@ BOOL hasDoneUpdate = NO;
 	return NO;
 }
 
++ (BOOL)hasBundledGD {
+    NSURL* bundledGD =
+        [[NSBundle mainBundle]
+            URLForResource:@"BundledGD"
+            withExtension:@"ipa"];
+
+    return bundledGD != nil &&
+           [[NSFileManager defaultManager]
+               fileExistsAtPath:bundledGD.path];
+}
+
++ (void)installBundledGD:(RootViewController*)root {
+    NSURL* bundledGD =
+        [[NSBundle mainBundle]
+            URLForResource:@"BundledGD"
+            withExtension:@"ipa"];
+
+    if (!bundledGD) {
+        AppLog(@"No bundled Geometry Dash IPA found.");
+        [root updateState];
+        return;
+    }
+
+    AppLog(@"Bundled Geometry Dash found: %@", bundledGD.path);
+
+    root.optionalTextLabel.text = @"Installing bundled Geometry Dash...";
+    [root progressVisibility:YES];
+
+    [VerifyInstall startGDInstall:root url:bundledGD];
+}
+
 + (void)startGDInstall:(RootViewController*)root url:(NSURL*)url {
 	@autoreleasepool {
 		[[Utils getPrefs] setBool:NO forKey:@"GDNeedsUpdate"];
