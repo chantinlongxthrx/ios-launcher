@@ -129,7 +129,40 @@ jobs:
 
           print("Geometry Dash download URL configured.")
           PY
+          
+      - name: Download bundled Geometry Dash
+        shell: bash
+        env:
+          GD_DOWNLOAD: ${{ inputs.gd_download }}
+        run: |
+          set -euo pipefail
 
+          if [ -z "${GD_DOWNLOAD:-}" ]; then
+            echo "ERROR: A decrypted Geometry Dash IPA URL is required."
+            echo "Run this workflow manually and enter it in gd_download."
+            exit 1
+          fi
+
+          mkdir -p Resources
+
+          echo "Downloading Geometry Dash IPA..."
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 2 \
+            "$GD_DOWNLOAD" \
+            --output Resources/BundledGD.ipa
+
+          test -s Resources/BundledGD.ipa
+
+          echo "Testing bundled GD IPA..."
+          unzip -t Resources/BundledGD.ipa
+
+          echo "Bundled GD IPA ready:"
+          ls -lh Resources/BundledGD.ipa
+          
       - name: Set build metadata
         shell: bash
         run: |
