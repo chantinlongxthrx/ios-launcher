@@ -412,8 +412,8 @@ BOOL hasDoneUpdate = NO;
 		return NO;
 	}
 
-	return [VerifyInstall verifyGDInstalled] &&
-		   [VerifyInstall verifyGeodeInstalled];
+// Geode is optional.
+return [VerifyInstall verifyGDInstalled];
 }
 
 @end
