@@ -6,9 +6,6 @@ on:
       - main
 
   workflow_dispatch:
-    inputs:
-permissions:
-  contents: read
 
 jobs:
   build:
