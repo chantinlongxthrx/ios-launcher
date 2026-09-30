@@ -340,21 +340,8 @@ BOOL hasDoneUpdate = NO;
 						^(BOOL success, NSString* errorInfo) {
 							dispatch_async(
 								dispatch_get_main_queue(),
-								^{
-									if (![VerifyInstall
-											verifyGeodeInstalled]) {
-
-										root.optionalTextLabel.text =
-											@"launcher.status.download-geode".loc;
-
-										[[[GeodeInstaller alloc] init]
-											startInstall:root
-											ignoreRoot:NO];
-									}
-									else {
-										[root progressVisibility:YES];
-										[root updateState];
-									}
+								^{[root progressVisibility:YES];
+								 [root updateState];
 								}
 							);
 
