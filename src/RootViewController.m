@@ -759,11 +759,41 @@ if ([VerifyInstall verifyGeodeInstalled]) {
 - (void)signApp:(BOOL)forceSign completionHandler:(void (^)(BOOL success, NSString* error))completionHandler {
 	// LiveContainer manages app launching and signing.
 	// Avoid certificate validation when running inside LiveContainer.
-	if (NSClassFromString(@"LCSharedUtils")) {
-    	return [Patcher patchGeode:^(BOOL success, NSString *error) {
-       	 AppLog(@"Patched Geode for LiveContainer (Success: %@, Error: %@)",
-            	   success ? @"YES" : @"NO", error);
-    	    completionHandler(success, error);
+// LiveContainer handles JIT and guest-app launching,
+// but the executable still needs a valid signature.
+if (NSClassFromString(@"LCSharedUtils")) {
+    NSURL* appBundleURL =
+        [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]];
+
+    LCAppInfo* app =
+        [[LCAppInfo alloc] initWithBundlePath:appBundleURL.path];
+
+    if (!app) {
+        return completionHandler(
+            NO,
+            @"Geometry Dash app bundle or Info.plist was not found."
+        );
+    }
+
+    [app
+        patchExecAndSignIfNeedWithCompletionHandler:^(BOOL success, NSString* signError) {
+            if (!success) {
+                AppLog(@"LiveContainer app signing failed: %@", signError);
+                return completionHandler(
+                    NO,
+                    signError ?: @"Failed to sign Geometry Dash for LiveContainer."
+                );
+            }
+
+            AppLog(@"Geometry Dash signature validated for LiveContainer.");
+            completionHandler(YES, nil);
+        }
+        progressHandler:^(NSProgress* progress) {}
+        forceSign:YES
+        blockMainThread:YES];
+
+    return;
+}
  	   }];
 	}
 	if (![[Utils getPrefs] boolForKey:@"JITLESS"] && ![[Utils getPrefs] boolForKey:@"FORCE_PATCHING"] && ![[Utils getPrefs] integerForKey:@"FORCE_CERT_JIT"]) {
