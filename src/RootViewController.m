@@ -757,6 +757,15 @@ if ([VerifyInstall verifyGeodeInstalled]) {
 }
 
 - (void)signApp:(BOOL)forceSign completionHandler:(void (^)(BOOL success, NSString* error))completionHandler {
+	// LiveContainer manages app launching and signing.
+	// Avoid certificate validation when running inside LiveContainer.
+	if (NSClassFromString(@"LCSharedUtils")) {
+    	return [Patcher patchGeode:^(BOOL success, NSString *error) {
+       	 AppLog(@"Patched Geode for LiveContainer (Success: %@, Error: %@)",
+            	   success ? @"YES" : @"NO", error);
+    	    completionHandler(success, error);
+ 	   }];
+	}
 	if (![[Utils getPrefs] boolForKey:@"JITLESS"] && ![[Utils getPrefs] boolForKey:@"FORCE_PATCHING"] && ![[Utils getPrefs] integerForKey:@"FORCE_CERT_JIT"]) {
 		return [Patcher patchGeode:^(BOOL success, NSString *error) {
 			AppLog(@"Patched Geode (Success: %@, Error: %@)", (success) ? @"YES" : @"NO", error);
