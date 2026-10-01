@@ -794,8 +794,6 @@ if (NSClassFromString(@"LCSharedUtils")) {
 
     return;
 }
- 	   }];
-	}
 	if (![[Utils getPrefs] boolForKey:@"JITLESS"] && ![[Utils getPrefs] boolForKey:@"FORCE_PATCHING"] && ![[Utils getPrefs] integerForKey:@"FORCE_CERT_JIT"]) {
 		return [Patcher patchGeode:^(BOOL success, NSString *error) {
 			AppLog(@"Patched Geode (Success: %@, Error: %@)", (success) ? @"YES" : @"NO", error);
