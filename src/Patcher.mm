@@ -533,7 +533,6 @@ for func in list:
 	return [hexString copy];
 }
 + (void)startUnzip:(void (^)(NSString* doForce))completionHandler {
-	return completionHandler(nil);
 	NSFileManager* fm = [NSFileManager defaultManager];
 	NSError* error;
 	BOOL isDir = NO;
