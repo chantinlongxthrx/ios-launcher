@@ -420,6 +420,15 @@ extern NSString *g_commitHash;
 			}
 		} custom:nil],
 		[Setting create:@"general.enable-updates".loc type:SettingTypeToggle disabled:nil visible:nil prefsKey:@"UPDATE_AUTOMATICALLY" switchTag:0 action:nil custom:nil],
+				[Setting simpleCreate:@"Install / Update Geode" type:SettingTypeButton action:^{
+			if (!_root) {
+				return;
+			}
+
+			[[GeodeInstaller alloc] startInstall:_root ignoreRoot:NO];
+
+			[self dismissViewControllerAnimated:YES completion:nil];
+		} custom:nil],
 		[Setting simpleCreate:@"general.check-updates".loc type:SettingTypeButton action:^{
 			if ([VerifyInstall verifyGeodeInstalled]) {
 				[[GeodeInstaller alloc] checkUpdates:_root download:YES];
