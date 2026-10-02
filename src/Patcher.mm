@@ -582,8 +582,6 @@ for func in list:
 }
 + (void)patchGeode:(void (^)(BOOL success, NSString* error))completionHandler {
 	if ([[Utils getPrefs] boolForKey:@"ENTERPRISE_MODE"]) {
-		AppLog(@"Skipping to Patch Geode because Enterprise Mode.");
-		return completionHandler(YES, @"");
 	}
 	if ([UIScreen mainScreen].maximumFramesPerSecond <= 60 && ![[Utils getPrefs] boolForKey:@"FORCE_ANGLE"]) {
 		AppLog(@"Skipping to Patch Geode because device doesn't support Pro-Motion.");
