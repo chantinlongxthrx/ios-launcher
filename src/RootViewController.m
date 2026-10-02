@@ -757,10 +757,7 @@ if ([VerifyInstall verifyGeodeInstalled]) {
 }
 
 - (void)signApp:(BOOL)forceSign completionHandler:(void (^)(BOOL success, NSString* error))completionHandler {
-	// LiveContainer manages app launching and signing.
-	// Avoid certificate validation when running inside LiveContainer.
-// LiveContainer handles JIT and guest-app launching,
-// but the executable still needs a valid signature.
+	
 if (NSClassFromString(@"LCSharedUtils")) {
     NSURL* appBundleURL =
         [[LCPath bundlePath] URLByAppendingPathComponent:[Utils gdBundleName]];
@@ -775,25 +772,52 @@ if (NSClassFromString(@"LCSharedUtils")) {
         );
     }
 
-    [app
-        patchExecAndSignIfNeedWithCompletionHandler:^(BOOL success, NSString* signError) {
+    // LiveContainer handles signing the guest app. Prepare Geode and
+    // unpack installed .geode mods before signing and launching the game.
+    void (^signGuestApp)(void) = ^{
+        [app
+            patchExecAndSignIfNeedWithCompletionHandler:^(BOOL success, NSString* signError) {
+                if (!success) {
+                    AppLog(@"LiveContainer app signing failed: %@", signError);
+                    return completionHandler(
+                        NO,
+                        signError ?: @"Failed to sign Geometry Dash for LiveContainer."
+                    );
+                }
+
+                AppLog(@"Geometry Dash signature validated for LiveContainer.");
+                completionHandler(YES, nil);
+            }
+            progressHandler:^(NSProgress* progress) {}
+            forceSign:YES
+            blockMainThread:YES];
+    };
+
+    // Geode is optional. Let Geometry Dash launch if Geode hasn't
+    // been installed yet; it can be installed from Settings.
+    if (![VerifyInstall verifyGeodeInstalled]) {
+        AppLog(@"Geode is not installed; signing Geometry Dash without Geode.");
+        signGuestApp();
+        return;
+    }
+
+    [Patcher startUnzip:^(NSString* doForce) {
+        [Patcher patchGeode:^(BOOL success, NSString* geodeError) {
             if (!success) {
-                AppLog(@"LiveContainer app signing failed: %@", signError);
+                AppLog(@"Geode preparation failed: %@", geodeError);
                 return completionHandler(
                     NO,
-                    signError ?: @"Failed to sign Geometry Dash for LiveContainer."
+                    geodeError ?: @"Failed to prepare Geode and mods."
                 );
             }
 
-            AppLog(@"Geometry Dash signature validated for LiveContainer.");
-            completionHandler(YES, nil);
-        }
-        progressHandler:^(NSProgress* progress) {}
-        forceSign:YES
-        blockMainThread:YES];
+            signGuestApp();
+        }];
+    }];
 
     return;
 }
+
 	if (![[Utils getPrefs] boolForKey:@"JITLESS"] && ![[Utils getPrefs] boolForKey:@"FORCE_PATCHING"] && ![[Utils getPrefs] integerForKey:@"FORCE_CERT_JIT"]) {
 		return [Patcher patchGeode:^(BOOL success, NSString *error) {
 			AppLog(@"Patched Geode (Success: %@, Error: %@)", (success) ? @"YES" : @"NO", error);
